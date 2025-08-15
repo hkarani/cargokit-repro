@@ -35,18 +35,32 @@ run_with_spinner() {
 # Function to parse GitHub release URL
 parse_github_release_url() {
     local url="$1"
-    
+
     # Extract owner, repo, and tag from URL
     if [[ $url =~ https://github\.com/([^/]+)/([^/]+)/releases/tag/(.+) ]]; then
         local owner="${BASH_REMATCH[1]}"
         local repo="${BASH_REMATCH[2]}"
         local tag="${BASH_REMATCH[3]}"
-        echo "$owner:$repo:$tag"
+
+        # Check if release exists using GitHub API
+        local api_url="https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
+        local status_code
+        status_code=$(curl -s -o /dev/null -w "%{http_code}" "$api_url")
+
+        if [[ "$status_code" -eq 200 ]]; then
+            echo "$owner:$repo:$tag"
+        elif [[ "$status_code" -eq 404 ]]; then
+            echo "❌ Invalid GitHub release URL format. Release '$tag' not found for $repo"
+            exit 0
+        else
+            return 0
+        fi
     else
         echo "Invalid GitHub release URL format"
         return 1
     fi
 }
+
 
 # Function to download source from GitHub release
 download_source_from_release() {
@@ -55,7 +69,7 @@ download_source_from_release() {
     local tag="$3"
     local target_dir="$4"
     
-    echo "📥 Downloading source from GitHub release..."
+    echo "📥 Downloading source assets from GitHub release..."
     
     # Create target directory
     mkdir -p "$target_dir"
@@ -67,27 +81,27 @@ download_source_from_release() {
     # Cleanup old files/folders if they exist
     [ -f "$zip_file" ] && rm -f "$zip_file"
     [ -d "$expected_dir" ] && rm -rf "$expected_dir"
-    local old_extracted=$(find . -maxdepth 1 -type d -name "*$tag" | head -1)
-    [ -n "$old_extracted" ] && rm -rf "$old_extracted"
+    local old_extracted=$(find . -maxdepth 1 -type d -name "*$tag" ! -name "." ! -name ".." | head -1)
+    if [ -n "$old_extracted" ] && [ "$old_extracted" != "." ] && [ "$old_extracted" != ".." ]; then
+        rm -rf "$old_extracted"
+    fi
     
     # Download source.zip from release
     local source_url="https://github.com/$owner/$repo/archive/refs/tags/$tag.zip"
     
     echo "Downloading source from: $source_url"
     
-    if curl -L -o "$zip_file" "$source_url"; then
-        echo "✅ Source downloaded successfully"
-        
+    if curl -s -L -o "$zip_file" "$source_url"; then
         # Extract the zip file
-        echo "📦 Extracting source..."
+        # echo "📦 Extracting source..."
         if unzip -q "$zip_file"; then
-            echo "✅ Source extracted successfully"
+            # echo "✅ Source extracted successfully"
             
             # Find the extracted directory (should be repo-tag)
             local extracted_dir=$(find . -maxdepth 1 -type d -name "*$tag" | head -1)
             if [ -n "$extracted_dir" ]; then
                 mv "$extracted_dir" "$expected_dir"
-                echo "✅ Source organized as $expected_dir/"
+                # echo "✅ Source organized as $expected_dir/"
             else
                 echo "⚠️ Could not find expected extracted directory"
             fi
@@ -95,12 +109,13 @@ download_source_from_release() {
             # Clean up zip file
             rm -f "$zip_file"
         else
+            rm -f "$zip_file"  # remove zip immediately after successful extraction
             echo "❌ Failed to extract source"
             return 1
         fi
     else
-        echo "❌ Failed to download source"
-        return 1
+        echo "❌ Failed to fetch the release"
+        exit 1
     fi
 }
 
@@ -109,10 +124,7 @@ download_binaries_from_release() {
     local owner="$1"
     local repo="$2"
     local tag="$3"
-    local lib_dir="$4"
-    
-    echo "📥 Downloading binaries from GitHub release..."
-    
+    local lib_dir="$4"    
     # Create lib directory structure
     local binary_dir="$lib_dir/$tag"
     mkdir -p "$binary_dir"
@@ -120,7 +132,7 @@ download_binaries_from_release() {
     # Get release assets via GitHub API
     local api_url="https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
     
-    echo "Fetching release assets from GitHub API..."
+    echo "Fetching release assets from GitHub..."
     
     # Download only .so and .a assets
     local assets=$(curl -s "$api_url" | jq -r '.assets[].browser_download_url' 2>/dev/null \
@@ -131,7 +143,7 @@ download_binaries_from_release() {
         return 1
     fi
     
-    echo "Found $(echo "$assets" | wc -l) assets to download"
+    # echo "Found $(echo "$assets" | wc -l) assets to download"
     
     # Download each asset
     echo "$assets" | while read -r asset_url; do
@@ -139,19 +151,22 @@ download_binaries_from_release() {
             local filename=$(basename "$asset_url")
             local asset_dir="$binary_dir/${filename%.*}"  # Remove extension for folder name
             
-            echo "📦 Downloading: $filename"
+            # echo "📦 Downloading: $filename"
             
             mkdir -p "$asset_dir"
             
-            if curl -L -o "$asset_dir/$filename" "$asset_url"; then
-                echo "✅ Downloaded: $filename -> $asset_dir/"
+            if curl -s -L -o "$asset_dir/$filename" "$asset_url"; then
+                # echo "✅ Downloaded: $filename -> $asset_dir/"
+                :
             else
                 echo "❌ Failed to download: $filename"
             fi
         fi
     done
     
-    echo "✅ All binaries downloaded to $binary_dir/"
+    # echo "✅ All binaries downloaded to $binary_dir/"
+    echo "✅ Assets downloaded successfully"
+
 }
 
 
@@ -173,7 +188,7 @@ bdkcross__build() {
 
     # Check if it's a GitHub release URL
     if [[ "$library_or_url" == https://github.com/*/releases/tag/* ]]; then
-        echo "🔗 Detected GitHub release URL: $library_or_url"
+        # echo "🔗 Found GitHub release URL: $library_or_url"
         
         # Parse the URL
         local parsed=$(parse_github_release_url "$library_or_url")
@@ -187,7 +202,7 @@ bdkcross__build() {
         
         # Set up directories
         local src_dir="$(pwd)/src"
-        local lib_dir="$(pwd)/lib"
+        local lib_dir="$(pwd)/lib/$repo"
         
         # Download source
         download_source_from_release "$owner" "$repo" "$tag" "$src_dir"
@@ -195,20 +210,20 @@ bdkcross__build() {
         # Download binaries
         download_binaries_from_release "$owner" "$repo" "$tag" "$lib_dir"
         
-        echo "✅ Setup complete!"
-        echo " Source: $src_dir/$repo/"
-        echo " Binaries: $lib_dir/$tag/"
+        # echo "✅ Setup complete!"
+        # echo " Source: $src_dir/$repo/"
+        # echo " Binaries: $lib_dir/$tag/"
         
         # Set library name for further processing
         library="$repo"
         VERSION="$tag"
         
-        echo "🔄 Building all targets for $library version $tag"
+        echo "🔄 Building all targets for $library release $tag"
 
     cd ../../
 
         # Get all build script files and run them
-        echo "🔄 Running all build scripts..."
+        # echo "🔄 Running all build scripts..."
         
         # Get all .sh files in build-scripts directory
         for script in build-scripts/*.sh; do
