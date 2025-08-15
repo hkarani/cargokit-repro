@@ -127,6 +127,7 @@ download_binaries_from_release() {
     local lib_dir="$4"    
     # Create lib directory structure
     local binary_dir="$lib_dir/$tag"
+    rm -rf "$binary_dir"
     mkdir -p "$binary_dir"
     
     # Get release assets via GitHub API
