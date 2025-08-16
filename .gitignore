@@ -7,3 +7,4 @@ release/*
 !lib/.gitkeep
 !release/.gitkeep
 !release/published.gitkeep
+.env_build*
