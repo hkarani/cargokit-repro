@@ -387,6 +387,7 @@ update_cargokit_toolchain() {
   local env_file="$1"
   local repo="$2"
   local cargokit_file="src/$repo/rust/cargokit.yaml"
+  local options_file="src/$repo/cargokit_options.yaml"
 
   # Extract RUST_VERSION from env file
   local rust_version
@@ -396,13 +397,24 @@ update_cargokit_toolchain() {
     return 1
   fi
 
-  # Replace only the release.toolchain line (without quotes)
+  # Update toolchain in cargokit.yml (release section only, no quotes)
   sed -i '' -E "s|^([[:space:]]*toolchain:).*|\1 $rust_version|" "$cargokit_file"
-
   echo "✅ Updated release toolchain in $cargokit_file to $rust_version"
+
+  # Handle cargokit_options.yaml
+  if [ -f "$options_file" ]; then
+    if grep -q '^use_precompiled_binaries:' "$options_file"; then
+      sed -i '' -E 's|^use_precompiled_binaries:.*|use_precompiled_binaries: false|' "$options_file"
+      echo "✅ Set use_precompiled_binaries: false in $options_file"
+    else
+      echo "use_precompiled_binaries: false" >> "$options_file"
+      echo "✅ Added use_precompiled_binaries: false to $options_file"
+    fi
+  else
+    echo "use_precompiled_binaries: false" > "$options_file"
+    echo "✅ Created $options_file with use_precompiled_binaries: false"
+  fi
 }
-
-
 
 
 bdkcross__build() {
