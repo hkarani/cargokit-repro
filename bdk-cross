@@ -325,6 +325,9 @@ EOF
 # Function to parse Rust toolchain from a .so file
 parse_rust_toolchain_from_linux_so() {
   local base_dir="${1:-.}"
+  local tag="${2:-}"
+  local env_file=".env_build_${tag}"
+
   # Find the first .so file in any subdirectory
   local so_file
   so_file=$(find "$base_dir" -type f -name "*.so" | head -n1)
@@ -340,11 +343,23 @@ parse_rust_toolchain_from_linux_so() {
 
   [ -z "$toolchain" ] && echo "No rustc version found in $so_file" >&2 && return 1
 
+  # Add or update RUST_VERSION in env file if tag is provided
+  if [ -n "$tag" ]; then
+    if grep -q '^RUST_VERSION=' "$env_file" 2>/dev/null; then
+      sed -i '' "s|^RUST_VERSION=.*|RUST_VERSION=$toolchain|" "$env_file"
+    else
+      echo "RUST_VERSION=$toolchain" >> "$env_file"
+    fi
+  fi
+
   echo "$toolchain"
 }
 
 parse_xcode_version_from_macos_lib() {
   local base_dir="${1:-.}"
+  local tag="${2:-}"
+  local env_file=".env_build_${tag}"
+
   # Find the first .a file in any subdirectory
   local lib_file
   lib_file=$(find "$base_dir" -type f -name "*.a" | head -n1)
@@ -355,6 +370,15 @@ parse_xcode_version_from_macos_lib() {
     sed -E 's#.*/Xcode_([0-9]+\.[0-9]+).*#\1#' | head -n1)
 
   [ -z "$xcode_version" ] && echo "No Xcode version found in $lib_file" >&2 && return 1
+
+  # Add or update XCODE_VERSION in env file if tag is provided
+  if [ -n "$tag" ]; then
+    if grep -q '^XCODE_VERSION=' "$env_file" 2>/dev/null; then
+      sed -i '' "s|^XCODE_VERSION=.*|XCODE_VERSION=$xcode_version|" "$env_file"
+    else
+      echo "XCODE_VERSION=$xcode_version" >> "$env_file"
+    fi
+  fi
 
   echo "$xcode_version"
 }
@@ -409,17 +433,18 @@ bdkcross__build() {
         library="$repo"
         VERSION="$tag"
         cd ../
-        parse_rust_toolchain_from_linux_so "lib/$tag" || {
-            echo "❌ Failed to parse Rust toolchain version"
-            exit 1
-        }
-        parse_xcode_version_from_macos_lib "lib/$tag" || {
-            echo "❌ Failed to parse Xcode version"
-            exit 1
-        }
+       
         parse_with_bash_regex $repo $tag
         replace_cargo_build_options $repo
         update_tempdir_keys $tag $repo
+        parse_rust_toolchain_from_linux_so "lib/$tag" "$tag" || {
+            echo "❌ Failed to parse Rust toolchain version"
+            exit 1
+        }
+        parse_xcode_version_from_macos_lib "lib/$tag" "$tag" || {
+            echo "❌ Failed to parse Xcode version"
+            exit 1
+        }
         ## ✅1 Set temp dir from build info if it doesn't exist or is set in env, set the library being build/compiled
         ## 2 Parse rust version set in .env and also in cargokit.yaml, and set precompiled to false
         ## 3 Get the Xcode version used and set it in .env
