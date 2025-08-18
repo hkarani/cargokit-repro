@@ -73,6 +73,8 @@ download_source_from_release() {
     
     # Create target directory
     mkdir -p "$target_dir"
+    # make sure the directory is empty
+    rm -rf "$target_dir"/* "$target_dir"/.[!.]* "$target_dir"/..?*
     cd "$target_dir" || return 1
     
     local zip_file="$tag.zip"
@@ -170,6 +172,159 @@ download_binaries_from_release() {
 
 }
 
+parse_with_bash_regex() {
+    local repo="$1"
+    local tag="${2:-$repo}"   # if $2 is empty, use $repo as fallback
+
+    # Handle both possible filenames
+    local input_file="src/$repo/.github/workflows/precompiled_binaries.yml"
+    [[ ! -f "$input_file" ]] && input_file="src/$repo/.github/workflows/precompile_binaries.yml"
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "❌ No precompiled/precompile_binaries.yml found for $repo"
+        return 1
+    fi
+
+    # Flatten file into one line for regex scanning
+    local content
+    content=$(tr '\n' ' ' < "$input_file")
+
+    # Extract values
+    [[ $content =~ --android-ndk-version=([^[:space:]]+) ]] && ndk_version="${BASH_REMATCH[1]}"
+    [[ $content =~ --android-sdk-location=([^[:space:]]+) ]] && sdk_location="${BASH_REMATCH[1]}"
+    [[ $content =~ --android-min-sdk-version=([^[:space:]]+) ]] && min_sdk_version="${BASH_REMATCH[1]}"
+    [[ $content =~ --tempdir=([^[:space:]]+) ]] && tempdir="${BASH_REMATCH[1]}"
+
+    # Write env file (suffix = tag)
+    local env_file=".env_build_$tag"
+    cat > "$env_file" << EOF
+NDK_VERSION=$ndk_version
+SDK_LOCATION=$sdk_location
+MIN_SDK_VERSION=$min_sdk_version
+TEMPDIR=$tempdir
+EOF
+
+    echo "✅ Created $env_file from $input_file"
+}
+
+
+
+# Function to update TEMPDIR keys in .env_build_$tag
+update_tempdir_keys() {
+  local tag="$1"
+  local repo="$2"
+  local env_file=".env_build_${tag}"
+  local build_info="build-info.env"
+  local key="TEMPDIR"
+  local key_macos="TEMPDIR-MACOS"
+  local key_linux="TEMPDIR-LINUX"
+  local repo_upper
+  repo_upper=$(echo "$repo" | tr '[:lower:]' '[:upper:]')
+
+  # Get the value of TEMPDIR in .env_build_$tag
+  local tempdir_val
+  tempdir_val=$(grep "^${key}=" "$env_file" | cut -d'=' -f2-)
+
+  if [ -z "$tempdir_val" ]; then
+    # Remove TEMPDIR line
+    sed -i '' "/^${key}=/d" "$env_file"
+
+    # Get values from build-info.env
+    local macos_val linux_val
+    macos_val=$(grep "^${repo_upper}_TEMP_DIR_MACOS=" "$build_info" | cut -d'=' -f2-)
+    linux_val=$(grep "^${repo_upper}_TEMP_DIR_LINUX=" "$build_info" | cut -d'=' -f2-)
+
+    # Add new keys
+    echo "${key_macos}=${macos_val}" >> "$env_file"
+    echo "${key_linux}=${linux_val}" >> "$env_file"
+  fi
+}
+
+## Allow cargokit to use any rust version as toolchain
+replace_cargo_build_options() {
+  local repo="$1"
+  local file="src/$repo/cargokit/build_tool/lib/src/options.dart"
+
+  if [[ ! -f "$file" ]]; then
+    echo "❌ File not found: $file" >&2
+    return 1
+  fi
+
+  local tmpfile
+  tmpfile=$(mktemp)
+
+  cat > "$tmpfile" <<'EOF'
+class CargoBuildOptions {
+  /// Can be 'stable', 'beta', 'nightly', or any custom string like '1.77.0'.
+  final String toolchain;
+  final List<String> flags;
+
+  CargoBuildOptions({
+    required this.toolchain,
+    required this.flags,
+  });
+
+  /// Reads the toolchain string from a YAML node.
+  static String _toolchainFromNode(YamlNode node) {
+    if (node case YamlScalar(value: String name)) {
+      return name; // just return the string directly
+    }
+    throw SourceSpanException(
+      'Toolchain must be a string (e.g., "stable", "beta", "nightly", or a version like "1.77.0").',
+      node.span,
+    );
+  }
+
+  static CargoBuildOptions parse(YamlNode node) {
+    if (node is! YamlMap) {
+      throw SourceSpanException('Cargo options must be a map', node.span);
+    }
+
+    String toolchain = "stable"; // default
+    List<String> flags = [];
+
+    for (final MapEntry(:key, :value) in node.nodes.entries) {
+      if (key case YamlScalar(value: 'toolchain')) {
+        toolchain = _toolchainFromNode(value);
+      } else if (key case YamlScalar(value: 'extra_flags')) {
+        if (value case YamlList(nodes: List<YamlNode> list)) {
+          if (list.every((element) => element is YamlScalar<String>)) {
+            flags = list.map((e) => (e as YamlScalar).value as String).toList();
+            continue;
+          }
+        }
+        throw SourceSpanException(
+          'Extra flags must be a list of strings',
+          value.span,
+        );
+      } else {
+        throw SourceSpanException(
+          'Unknown cargo option type. Must be "toolchain" or "extra_flags".',
+          key.span,
+        );
+      }
+    }
+
+    return CargoBuildOptions(toolchain: toolchain, flags: flags);
+  }
+}
+EOF
+
+  # Use awk to replace between lines (works on macOS and Linux)
+  awk -v replfile="$tmpfile" '
+    BEGIN {while((getline line < replfile)>0) repl = repl line "\n"}
+    /class CargoBuildOptions {/ {print repl; skip=1; next}
+    skip && /^}/ {skip=0; next}
+    !skip {print}
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+
+  rm -f "$tmpfile"
+
+  echo "✅ Replaced CargoBuildOptions in $file"
+}
+
+
+
 
 bdkcross__build() {
     library_or_url=$1 
@@ -218,10 +373,17 @@ bdkcross__build() {
         # Set library name for further processing
         library="$repo"
         VERSION="$tag"
-        
+        cd ../
+        parse_with_bash_regex $repo $tag
+        replace_cargo_build_options $repo
+        update_tempdir_keys $tag $repo
+        ## 1 Set temp dir from build info if it doesn't exist or is set in env, set the library being build/compiled
+        ## 2 Parse rust version set in .env and also in cargokit.yaml, and set precompiled to false
+        ## 3 Get the Xcode version used and set it in .env
+        ## ✅ 5 Update patched cargo_kit version that allows varied rust version
+        ## 6 Set the correct .cargo.config.toml settings
+        ## 7 Rename Xcode path
         echo "🔄 Building all targets for $library release $tag"
-
-    cd ../../
 
         # Get all build script files and run them
         # echo "🔄 Running all build scripts..."
@@ -237,6 +399,7 @@ bdkcross__build() {
         done
         
         echo "✅ All builds completed!"
+        #5 remove .env_build_$tag
         
     else
         echo "❌ Please provide a valid GitHub release URL"
