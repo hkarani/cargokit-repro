@@ -322,8 +322,26 @@ EOF
 
   echo "✅ Replaced CargoBuildOptions in $file"
 }
+# Function to parse Rust toolchain from a .so file
+parse_rust_toolchain_from_linux_so() {
+  local base_dir="${1:-.}"
+  # Find the first .so file in any subdirectory
+  local so_file
+  so_file=$(find "$base_dir" -type f -name "*.so" | head -n1)
+  [ -z "$so_file" ] && echo "No .so file found in $base_dir" >&2 && return 1
 
+  local toolchain
+  toolchain=$(strings "$so_file" | grep -oE 'rustc version [^ ]+ \([^)]+\)' | head -n1 | \
+    sed -E \
+      -e 's/rustc version ([0-9]+\.[0-9]+\.[0-9]+)-nightly \([a-f0-9]+ ([0-9]{4}-[0-9]{2}-[0-9]{2})\)/nightly-\2/' \
+      -e 's/rustc version ([0-9]+\.[0-9]+\.[0-9]+)-beta \([a-f0-9]+ ([0-9]{4}-[0-9]{2}-[0-9]{2})\)/beta-\2/' \
+      -e 's/rustc version ([0-9]+\.[0-9]+\.[0-9]+) \([^)]+\)/\1/'
+  )
 
+  [ -z "$toolchain" ] && echo "No rustc version found in $so_file" >&2 && return 1
+
+  echo "$toolchain"
+}
 
 
 bdkcross__build() {
@@ -374,10 +392,14 @@ bdkcross__build() {
         library="$repo"
         VERSION="$tag"
         cd ../
+        parse_rust_toolchain_from_linux_so "lib/$tag" || {
+            echo "❌ Failed to parse Rust toolchain version"
+            exit 1
+        }
         parse_with_bash_regex $repo $tag
         replace_cargo_build_options $repo
         update_tempdir_keys $tag $repo
-        ## 1 Set temp dir from build info if it doesn't exist or is set in env, set the library being build/compiled
+        ## ✅1 Set temp dir from build info if it doesn't exist or is set in env, set the library being build/compiled
         ## 2 Parse rust version set in .env and also in cargokit.yaml, and set precompiled to false
         ## 3 Get the Xcode version used and set it in .env
         ## ✅ 5 Update patched cargo_kit version that allows varied rust version
