@@ -343,6 +343,23 @@ parse_rust_toolchain_from_linux_so() {
   echo "$toolchain"
 }
 
+parse_xcode_version_from_macos_lib() {
+  local base_dir="${1:-.}"
+  # Find the first .a file in any subdirectory
+  local lib_file
+  lib_file=$(find "$base_dir" -type f -name "*.a" | head -n1)
+  [ -z "$lib_file" ] && echo "No .a file found in $base_dir" >&2 && return 1
+
+  local xcode_version
+  xcode_version=$(strings "$lib_file" | grep -oE '/Applications/Xcode_[0-9]+\.[0-9]+' | \
+    sed -E 's#.*/Xcode_([0-9]+\.[0-9]+).*#\1#' | head -n1)
+
+  [ -z "$xcode_version" ] && echo "No Xcode version found in $lib_file" >&2 && return 1
+
+  echo "$xcode_version"
+}
+
+
 
 bdkcross__build() {
     library_or_url=$1 
@@ -394,6 +411,10 @@ bdkcross__build() {
         cd ../
         parse_rust_toolchain_from_linux_so "lib/$tag" || {
             echo "❌ Failed to parse Rust toolchain version"
+            exit 1
+        }
+        parse_xcode_version_from_macos_lib "lib/$tag" || {
+            echo "❌ Failed to parse Xcode version"
             exit 1
         }
         parse_with_bash_regex $repo $tag
