@@ -1,0 +1,4 @@
+[env]
+RUSTFLAGS = "-C link-arg=-undefined -C link-arg=dynamic_lookup"
+MACOSX_DEPLOYMENT_TARGET = "17.5"
+IPHONEOS_DEPLOYMENT_TARGET = "17.5"

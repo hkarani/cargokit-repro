@@ -73,14 +73,14 @@ fi
 mkdir -p "$folder_name"
 
 if [ ! -z "$lib_name" ]; then
-  a_file="/root/release/output_binaries/lib$lib_name.so"
+  a_file="/root/release/output_binaries/"
 else 
-  a_file="/root/release/output_binaries/lib$package_name.so"
+  a_file="/root/release/output_binaries/"
 fi
 
 
 full_path="/$current_dir/$folder_name"
-docker cp -a $container_id:$a_file "$full_path/${target}_lib$package_name.so" || { 
+docker cp -a $container_id:$a_file "$full_path/" || { 
     echo "Error: Failed to copy file from container." >&2
     exit 1
 }

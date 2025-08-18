@@ -416,6 +416,28 @@ update_cargokit_toolchain() {
   fi
 }
 
+update_cargo_config() {
+  local repo="$1"
+  local config_file="configs/${repo}-config.toml"
+  local dest_dir="src/$repo/rust/.cargo"
+  local dest_file="$dest_dir/config.toml"
+
+  # Check if config exists
+  if [ ! -f "$config_file" ]; then
+    echo "❌ Config file $config_file not found"
+    return 1
+  fi
+
+  # Ensure destination directory exists
+  mkdir -p "$dest_dir"
+
+  # Copy config
+  cp "$config_file" "$dest_file"
+
+  echo "✅ Updated Cargo config for $repo → $dest_file"
+}
+
+
 
 bdkcross__build() {
     library_or_url=$1 
@@ -481,8 +503,12 @@ bdkcross__build() {
             echo "❌ Failed to update Cargokit toolchain"
             exit 1
         }
+        update_cargo_config "$repo" || {
+            echo "❌ Failed to update Cargo config"
+            exit 1
+        }
         ## ✅1 Set temp dir from build info if it doesn't exist or is set in env, set the library being build/compiled
-        ## 2 Parse rust version set in .env and also in cargokit.yaml, and set precompiled to false
+        ## ✅2 Parse rust version set in .env and also in cargokit.yaml, and set precompiled to false
         ## ✅3 Get the Xcode version used and set it in .env
         ## ✅ 5 Update patched cargo_kit version that allows varied rust version
         ## 6 Set the correct .cargo.config.toml settings
