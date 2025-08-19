@@ -198,6 +198,8 @@ parse_with_bash_regex() {
     # Write env file (suffix = tag)
     local env_file=".env_build_$tag"
     cat > "$env_file" << EOF
+REPO=$repo
+RELEASE_TAG=$tag
 NDK_VERSION=$ndk_version
 SDK_LOCATION=$sdk_location
 MIN_SDK_VERSION=$min_sdk_version
@@ -206,6 +208,7 @@ EOF
 
     echo "✅ Created $env_file from $input_file"
 }
+
 
 
 
@@ -511,7 +514,7 @@ bdkcross__build() {
         ## ✅2 Parse rust version set in .env and also in cargokit.yaml, and set precompiled to false
         ## ✅3 Get the Xcode version used and set it in .env
         ## ✅ 5 Update patched cargo_kit version that allows varied rust version
-        ## 6 Set the correct .cargo.config.toml settings
+        ## ✅6 Set the correct .cargo.config.toml settings
         ## 7 Rename Xcode path
         echo "🔄 Building all targets for $library release $tag"
 
