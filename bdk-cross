@@ -209,9 +209,6 @@ EOF
     echo "✅ Created $env_file from $input_file"
 }
 
-
-
-
 # Function to update TEMPDIR keys in .env_build_$tag
 update_tempdir_keys() {
   local tag="$1"
@@ -219,8 +216,8 @@ update_tempdir_keys() {
   local env_file=".env_build_${tag}"
   local build_info="build-info.env"
   local key="TEMPDIR"
-  local key_macos="TEMPDIR-MACOS"
-  local key_linux="TEMPDIR-LINUX"
+  local key_macos="TEMPDIR_MACOS"
+  local key_linux="TEMPDIR_LINUX"
   local repo_upper
   repo_upper=$(echo "$repo" | tr '[:lower:]' '[:upper:]')
 
@@ -485,10 +482,6 @@ bdkcross__build() {
         # echo "✅ Setup complete!"
         # echo " Source: $src_dir/$repo/"
         # echo " Binaries: $lib_dir/$tag/"
-        
-        # Set library name for further processing
-        library="$repo"
-        VERSION="$tag"
         cd ../
        
         parse_with_bash_regex $repo $tag
@@ -527,7 +520,7 @@ bdkcross__build() {
                 script_name=$(basename "$script" .sh)
                 echo "🟡 Starting $script_name build"
             . ./configs.sh
-                . "$script" "$library" "$VERSION"
+                . "$script" "$repo" "$tag"
             fi
         done
         
