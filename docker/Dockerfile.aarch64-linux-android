@@ -1,5 +1,30 @@
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
+ARG REPO
+ARG RELEASE_TAG
+ARG NDK_VERSION
+ARG SDK_LOCATION
+ARG MIN_SDK_VERSION
+ARG TEMPDIR_LINUX
+ARG RUST_VERSION
+
+ENV REPO=$REPO \
+    RELEASE_TAG=$RELEASE_TAG \
+    NDK_VERSION=$NDK_VERSION \
+    SDK_LOCATION=$SDK_LOCATION \
+    MIN_SDK_VERSION=$MIN_SDK_VERSION \
+    TEMPDIR_LINUX=$TEMPDIR_LINUX \
+    RUST_VERSION="nightly-2025-06-26"
+
+RUN echo "REPO=$REPO"
+RUN echo "RELEASE_TAG=$RELEASE_TAG"
+RUN echo "NDK_VERSION=$NDK_VERSION"
+RUN echo "SDK_LOCATION=$SDK_LOCATION"
+RUN echo "MIN_SDK_VERSION=$MIN_SDK_VERSION"
+RUN echo "TEMPDIR_LINUX=$TEMPDIR_LINUX"
+RUN echo "RUST_VERSION=$RUST_VERSION"
+
+ENV DEBIAN_FRONTEND=noninteractive
 # Install dependencies for Rust development
 RUN apt-get update && apt-get install -y \
   build-essential \
@@ -10,72 +35,138 @@ RUN apt-get update && apt-get install -y \
   unzip \
   git \
   wget \
-  clang \
   cmake \
   openjdk-21-jdk \
   && apt-get clean
 
 # Install Rust compiler (using rustup)
-RUN curl -sSL https://sh.rustup.rs | sh -s -- -y
+RUN useradd -ms /bin/bash runner && mkdir -p /home/runner/.cargo /home/runner/.rustup home/runner/work && chown -R runner:runner /home/runner
 
-ENV PATH="/root/.cargo/bin:$PATH"
-ENV RUST_VERSION="1.81.0"
+USER runner
+ARG RUST_VERSION
+ENV RUST_VERSION=$RUST_VERSION
+RUN echo "RUST_VERSION=$RUST_VERSION"
+ENV HOME=/home/runner \
+    CARGO_HOME=/home/runner/.cargo \
+    RUSTUP_HOME=/home/runner/.rustup \
+    PATH=/home/runner/.cargo/bin:$PATH
 
-RUN rustup install "$RUST_VERSION"
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
 
-RUN rustup default "$RUST_VERSION"
 
-# Install cargo-ndk
-RUN cargo install cargo-ndk
+ENV CARGO_HOME="/home/runner/.cargo"
+ENV RUSTUP_HOME="/home/runner/.rustup"
+ENV PATH="/home/runner/.cargo/bin:$PATH"
 
-# Install Android SDK
-WORKDIR /usr/lib
-RUN mkdir -p android-sdk
-WORKDIR /usr/lib/android-sdk
+RUN rustup component add rust-src --toolchain $RUST_VERSION
+
+RUN rustup target add aarch64-linux-android --toolchain ${RUST_VERSION}
+
+RUN mv ~/.rustup/toolchains/nightly-2025-06-25-x86_64-unknown-linux-gnu \
+   ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+
+USER root
+ARG TEMPDIR_LINUX
+ENV TEMPDIR_LINUX=$TEMPDIR_LINUX
+RUN echo "$TEMPDIR_LINUX"
+# Create SDK folder and set ownership for existing runner user
+RUN mkdir -p /usr/local/lib/android/sdk && \
+    mkdir -p /opt/ && \
+    mkdir -p $TEMPDIR_LINUX && \
+    chown -R runner:runner /usr/local/lib/android/sdk && \
+    chown -R runner:runner /opt/ && \
+    chown -R runner:runner $TEMPDIR_LINUX
+
+# Switch to runner
+USER runner
+
+WORKDIR /usr/local/lib/android/sdk
+
+# Download and install command-line tools
 RUN curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip \
   && unzip cmdline-tools.zip -d cmdline-tools \
   && mv cmdline-tools/cmdline-tools cmdline-tools/latest \
   && rm cmdline-tools.zip
 
-# Set up Android SDK environment variables
-ENV ANDROID_HOME="/usr/lib/android-sdk"
+# Set environment variables for runner
+ENV ANDROID_HOME="/usr/local/lib/android/sdk"
 ENV PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 
-# Accept Android SDK licenses
+# Accept licenses and install NDK
 RUN yes | sdkmanager --licenses
+RUN sdkmanager --install "ndk;$NDK_VERSION"
 
-# Install Android NDK
-RUN sdkmanager --install "ndk;25.1.8937393"
-
-# Set up NDK environment variables
-ENV ANDROID_NDK_HOME="$ANDROID_HOME/ndk/25.1.8937393"
+# Set NDK env vars
+ENV ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
 ENV PATH="$ANDROID_NDK_HOME:$PATH"
 
-ENV CARGO_TARGET_AARCH64-LINUX-ANDROID_LINKER=clang
-ENV CARGO_TARGET_AARCH64-LINUX-ANDROID_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
+
+# Set up NDK environment variables
+ENV ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+ENV PATH="$ANDROID_NDK_HOME:$PATH"
+
+# Add NDK LLVM toolchain binaries to PATH
+ENV PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+
+WORKDIR /home/runner/work/$REPO/
 # Copy the folder from root
-COPY src/* /app/
-
+COPY --chown=runner:runner src/ .
 # Change directory
-WORKDIR /app/rust
+RUN chown -R runner:runner /home/runner/work/$REPO
+WORKDIR /home/runner/work/$REPO/$REPO/rust
 
-RUN rustup target install aarch64-linux-android
+RUN mkdir -p ~/lib/linux
 
-RUN mkdir -p /root/release/linux && \
-    cargo ndk -t aarch64-linux-android build --release 
+RUN mkdir -p  ~/release/linux
 
-WORKDIR /
-RUN ls
+
+ENV TOOLCHAIN_PATH="/usr/local/lib/android/sdk/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+# Use API-level suffixed clang (injects sysroot + libs automatically)
+ENV CC_aarch64_linux_android="$TOOLCHAIN_PATH/aarch64-linux-android${MIN_SDK_VERSION}-clang" \
+    CXX_aarch64_linux_android="$TOOLCHAIN_PATH/aarch64-linux-android${MIN_SDK_VERSION}-clang++" \
+    AR_aarch64_linux_android="$TOOLCHAIN_PATH/llvm-ar" \
+    RANLIB_aarch64_linux_android="$TOOLCHAIN_PATH/llvm-ranlib" \
+    CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN_PATH/aarch64-linux-android${MIN_SDK_VERSION}-clang" \
+    CARGO_TARGET_DIR=${TEMPDIR_LINUX}
+
+ENV TARGET_TEMP_DIR=${TEMPDIR_LINUX}
+# Create the gccworkaround file
+RUN export WORKAROUND_DIR=$TEMPDIR_LINUX/cargokit/libgcc_workaround/${NDK_VERSION%%.*} && \
+    mkdir -p $WORKAROUND_DIR && \
+    if [ ${NDK_VERSION%%.*} -ge 23 ]; then \
+        echo "INPUT(-lunwind)" > $WORKAROUND_DIR/libgcc.a; \
+    else \
+        echo "INPUT(-lgcc)" > $WORKAROUND_DIR/libunwind.a; \
+    fi && \
+    # Fix CARGO_ENCODED_RUSTFLAGS inline
+    if [ -n "$CARGO_ENCODED_RUSTFLAGS" ]; then \
+        NEW_FLAGS="${CARGO_ENCODED_RUSTFLAGS}\x1f-L\x1f${WORKAROUND_DIR}"; \
+    else \
+        NEW_FLAGS="-L\x1f${WORKAROUND_DIR}"; \
+    fi
+
+#Persist ENV across layers
+ENV WORKAROUND_DIR="${TEMPDIR_LINUX}/cargokit/libgcc_workaround/${NDK_VERSION%%.*}"
+ENV CARGO_ENCODED_RUSTFLAGS="-L\x1f${TEMPDIR_LINUX}/cargokit/libgcc_workaround/${NDK_VERSION%%.*}"
+
+# Set the ENV directly (no /etc/environment needed)
+
+# ENV RUSTFLAGS="-C opt-level=z -C -C codegen-units=1 -C panic=abort"
+RUN cargo +nightly build -Z build-std=panic_abort,std --release --target aarch64-linux-android -v
 
 RUN mkdir -p ~/release/output_binaries
-ENV SOURCE_DIR="/app/rust/target/aarch64-linux-android/release"
-ENV DEST_DIR="/root/release/output_binaries"
+ENV SOURCE_DIR="${TEMPDIR_LINUX}"
+ENV DEST_DIR="/home/runner/release/output_binaries"
 
-RUN find "$SOURCE_DIR" -maxdepth 1 -type f -name "*.so" -exec cp {} "$DEST_DIR" \; -quit
+# RUN find "$SOURCE_DIR" -maxdepth 1 -type f -name "*.so" -exec cp {} "$DEST_DIR" \; -quit
+RUN cp -r "$SOURCE_DIR/" "$DEST_DIR/"
+
 
 FROM ubuntu:22.04 AS final
 RUN mkdir -p ~/release/output_binaries
-COPY --from=builder /root/release/output_binaries/*.so /root/release/output_binaries
+COPY --from=builder /home/runner/release/output_binaries/ /root/release/output_binaries
+
 
 # Run a tiny program to make the build runnable
 CMD ["sleep", "infinity"]
