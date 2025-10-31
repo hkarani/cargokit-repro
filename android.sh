@@ -1,90 +1,43 @@
-#!/bin/sh
+#!/bin/bash
 
-set +e  # Exit on failure
+# Configuration
+export ANDROID_SDK_ROOT=/opt/android-sdk
+export NDK_VERSION=25.1.8937393
+export MIN_SDK_VERSION=21
+export TARGET=aarch64-linux-android
+export TARGET_TEMP_DIR=/app/build
+export HOST_ARCH=linux-x86_64
+export NDK_PATH=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION
+export TOOLCHAIN_PATH=$NDK_PATH/toolchains/llvm/prebuilt/$HOST_ARCH/bin
 
-# Check if docker is installed
+# Environment variables for Rust compilation
+export AR_${TARGET}=$TOOLCHAIN_PATH/${TARGET}-ar
+export CC_${TARGET}=$TOOLCHAIN_PATH/clang
+export CFLAGS_${TARGET}=--target=${TARGET}${MIN_SDK_VERSION}
+export CXX_${TARGET}=$TOOLCHAIN_PATH/clang++
+export CXXFLAGS_${TARGET}=--target=${TARGET}${MIN_SDK_VERSION}
+export RANLIB_${TARGET}=$TOOLCHAIN_PATH/llvm-ranlib
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN_PATH/clang
+export _CARGOKIT_NDK_LINK_TARGET=--target=${TARGET}${MIN_SDK_VERSION}
+export _CARGOKIT_NDK_LINK_CLANG=$TOOLCHAIN_PATH/clang
+export CARGOKIT_TOOL_TEMP_DIR=$TARGET_TEMP_DIR
 
-if [ ! -x "$(command -v docker)" ]; then
-    echo "docker is not installed"
-    echo "installation instructions might be here: https://docs.docker.com/engine/install/"
-    exit 0
-fi
-# Function to extract the package version from Cargo.toml
-  # Use grep to find the line containing 'version' in Cargo.toml
-cd src/*/rust
-version_line=$(grep -E '^version = .*' Cargo.toml)
-
-# Extract the version string after the  '='
-if [ ! -z "$version_line" ]; then
-    version=$(echo "$version_line" | cut -d '=' -f2 | tr -d '[:space:]')
-    package_version=$(echo "$version" | sed 's/^"//' | sed 's/"$//')
+# libgcc workaround
+export WORKAROUND_DIR=$TARGET_TEMP_DIR/cargokit/libgcc_workaround/${NDK_VERSION%%.*}
+mkdir -p $WORKAROUND_DIR
+if [ ${NDK_VERSION%%.*} -ge 23 ]; then
+    echo "INPUT(-lunwind)" > $WORKAROUND_DIR/libgcc.a
 else
-    echo "Error: Could not find 'version' in Cargo.toml"
+    echo "INPUT(-lgcc)" > $WORKAROUND_DIR/libunwind.a
 fi
 
-# Extract the name from the [package] section
-package_name_line=$(grep -m 1 -E '^name = .*' Cargo.toml)
-
-# Extract the second name from the [lib] section
-lib_name_line=$(grep -E '^\[lib\]' -A 5 Cargo.toml | grep -E '^name = .*')
-
-# Extract the package name string after the '='
-if [ ! -z "$package_name_line" ]; then
-    package_name=$(echo "$package_name_line" | cut -d '=' -f2 | tr -d '[:space:]' | sed 's/^"//' | sed 's/"$//')
-else
-    echo "Error: Could not find 'name' in [package] section"
-    exit 1
+# CARGO_ENCODED_RUSTFLAGS fix: Append -L with \x1f separator if existing flags present
+if [ -n "$CARGO_ENCODED_RUSTFLAGS" ]; then
+    export CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS}\x1f-L\x1f${WORKAROUND_DIR}"
+else    
+    export CARGO_ENCODED_RUSTFLAGS="-L\x1f${WORKAROUND_DIR}"
 fi
 
-# Extract the lib name string after the '=' if it exists
-if [ ! -z "$lib_name_line" ]; then
-    lib_name=$(echo "$lib_name_line" | cut -d '=' -f2 | tr -d '[:space:]' | sed 's/^"//' | sed 's/"$//')
-else
-    lib_name=""
-fi
-
-# Print the final package name
-echo "Package name: $package_name"
-
-
-cd ../../../
-
-
-# Print the version or handle errors
-if [ ! -z "$package_version" ]; then
-  echo "Package version: $package_version"
-else
-  echo "An error occurred while reading the version."
-  exit 1  
-fi
-
-echo "Starting  $target build..."
-docker build -t build-$target -f Dockerfile.$target .
-echo "Build completed!"
-echo "Running build-$target docker"
-container_id=$(docker run -d build-$target) || fail "Failed to run container"
-current_dir=$(pwd)
-folder_name="lib/$target"
-
-if [ -d "$folder_name" ]; then
-    rm -rf "$folder_name"
-fi
-mkdir "$folder_name"
-
-architecture="aarch64-linux-android"
-
-# Assign lib name as package name if lib name exists
-if [ ! -z "$lib_name" ]; then
-  a_file="/app/target/$architecture/release//lib$lib_name.a"
-else 
-  a_file="/app/target/$architecture/release//lib$package_name.a"
-fi
-
-
-full_path="/$current_dir/$folder_name"
-docker cp -a $container_id:"$a_file" "$full_path/lib$package_name-$package_version.a"
-echo "File copied"
-docker kill $container_id
-echo "build-$target container stoppped"
-
-echo "Build completed! Library in lib/android folder."
+# Verify environment
+echo "Environment variables set:"
+env | grep -E "AR_|CC_|CFLAGS_|CXX_|CXXFLAGS_|RANLIB_|CARGO_|_CARGOKIT"

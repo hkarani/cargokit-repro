@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 # Install dependencies for Rust development
 RUN apt-get update && apt-get install -y \
@@ -15,38 +15,48 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean
 
 # Install Rust compiler (using rustup)
-RUN curl -sSL https://sh.rustup.rs | sh -s -- -y
+RUN useradd -ms /bin/bash runner && mkdir -p /home/runner/.cargo /home/runner/.rustup home/runner/work && chown -R runner:runner /home/runner
 
-ENV PATH="/root/.cargo/bin:$PATH"
+USER runner
+ENV HOME=/home/runner \
+    CARGO_HOME=/home/runner/.cargo \
+    RUSTUP_HOME=/home/runner/.rustup \
+    PATH=/home/runner/.cargo/bin:$PATH
 
-ENV RUST_VERSION="1.81.0"
+# Install Rust 1.88.0
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
 
-RUN rustup install "$RUST_VERSION"
+ENV CARGO_HOME="/home/runner/.cargo"
+ENV RUSTUP_HOME="/home/runner/.rustup"
+ENV PATH="/home/runner/.cargo/bin:$PATH"
 
-RUN rustup default "$RUST_VERSION"
-
+WORKDIR /home/runner/work/bdk-flutter/
 # Copy the folder from root
-COPY src/* /app/
-
+COPY --chown=runner:runner src/ .
 # Change directory
-WORKDIR /app/rust/
+RUN chown -R runner:runner /home/runner/work/bdk-flutter
+WORKDIR /home/runner/work/bdk-flutter/bdk-flutter/rust/
 
 RUN mkdir -p ~/lib/linux
 
 RUN mkdir -p  ~/release/linux
 
+RUN cargo clean
 RUN rustup target add x86_64-unknown-linux-gnu
 RUN cargo build --release --target x86_64-unknown-linux-gnu
 
 RUN mkdir -p ~/release/output_binaries
-ENV SOURCE_DIR="/app/rust/target/x86_64-unknown-linux-gnu/release/"
-ENV DEST_DIR="/root/release/output_binaries"
+ENV SOURCE_DIR="/home/runner/work/bdk-flutter/bdk-flutter/rust/target/x86_64-unknown-linux-gnu/release/"
+ENV DEST_DIR="/home/runner/release/output_binaries"
 
 RUN find "$SOURCE_DIR" -maxdepth 1 -type f -name "*.so" -exec cp {} "$DEST_DIR" \; -quit
 
 FROM ubuntu:22.04 AS final
 RUN mkdir -p ~/release/output_binaries
-COPY --from=builder /root/release/output_binaries/*.so /root/release/output_binaries
+COPY --from=builder /home/runner/release/output_binaries/*.so /root/release/output_binaries
+WORKDIR /root/release/output_binaries
+
+RUN ls
 
 # Run a tiny program to make the build runnable
 CMD ["sleep", "infinity"]

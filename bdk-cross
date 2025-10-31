@@ -243,10 +243,11 @@ update_tempdir_keys() {
 ## Allow cargokit to use any rust version as toolchain
 replace_cargo_build_options() {
   local repo="$1"
-  local file="src/$repo/cargokit/build_tool/lib/src/options.dart"
+  local options_file="src/$repo/cargokit/build_tool/lib/src/options.dart"
+  local builder_file="src/$repo/cargokit/build_tool/lib/src/builder.dart"
 
-  if [[ ! -f "$file" ]]; then
-    echo "❌ File not found: $file" >&2
+  if [[ ! -f "$options_file" ]]; then
+    echo "❌ File not found: $options_file" >&2
     return 1
   fi
 
@@ -266,8 +267,8 @@ class CargoBuildOptions {
 
   /// Reads the toolchain string from a YAML node.
   static String _toolchainFromNode(YamlNode node) {
-    if (node case YamlScalar(value: String name)) {
-      return name; // just return the string directly
+    if (node is YamlScalar && node.value is String) {
+      return node.value as String; // just return the string directly
     }
     throw SourceSpanException(
       'Toolchain must be a string (e.g., "stable", "beta", "nightly", or a version like "1.77.0").',
@@ -287,9 +288,9 @@ class CargoBuildOptions {
       if (key case YamlScalar(value: 'toolchain')) {
         toolchain = _toolchainFromNode(value);
       } else if (key case YamlScalar(value: 'extra_flags')) {
-        if (value case YamlList(nodes: List<YamlNode> list)) {
-          if (list.every((element) => element is YamlScalar<String>)) {
-            flags = list.map((e) => (e as YamlScalar).value as String).toList();
+        if (value is YamlList) {
+          if (value.nodes.every((element) => element is YamlScalar && element.value is String)) {
+            flags = value.nodes.map((e) => (e as YamlScalar).value as String).toList();
             continue;
           }
         }
@@ -310,18 +311,30 @@ class CargoBuildOptions {
 }
 EOF
 
-  # Use awk to replace between lines (works on macOS and Linux)
+  # Replace the CargoBuildOptions class in options.dart
   awk -v replfile="$tmpfile" '
     BEGIN {while((getline line < replfile)>0) repl = repl line "\n"}
     /class CargoBuildOptions {/ {print repl; skip=1; next}
     skip && /^}/ {skip=0; next}
     !skip {print}
-  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+  ' "$options_file" > "${options_file}.tmp" && mv "${options_file}.tmp" "$options_file"
 
   rm -f "$tmpfile"
 
-  echo "✅ Replaced CargoBuildOptions in $file"
+  echo "✅ Replaced CargoBuildOptions in $options_file"
+
+  # Regex replace in builder.dart
+  if [[ -f "$builder_file" ]]; then
+    sed -i.bak -E \
+      "s|String get _toolchain => _buildOptions\?\..*name \?\? 'stable';|String get _toolchain => _buildOptions?.toolchain ?? 'stable';|" \
+      "$builder_file" && rm -f "${builder_file}.bak"
+    echo "✅ Updated _toolchain getter in $builder_file"
+  else
+    echo "⚠️  builder.dart not found at $builder_file"
+  fi
 }
+
+
 # Function to parse Rust toolchain from a .so file
 parse_rust_toolchain_from_linux_so() {
   local base_dir="${1:-.}"
@@ -487,11 +500,11 @@ bdkcross__build() {
         parse_with_bash_regex $repo $tag
         replace_cargo_build_options $repo
         update_tempdir_keys $tag $repo
-        parse_rust_toolchain_from_linux_so "lib/$tag" "$tag" || {
+        parse_rust_toolchain_from_linux_so "lib/$repo/$tag" "$tag" || {
             echo "❌ Failed to parse Rust toolchain version"
             exit 1
         }
-        parse_xcode_version_from_macos_lib "lib/$tag" "$tag" || {
+        parse_xcode_version_from_macos_lib "lib/$repo/$tag" "$tag" || {
             echo "❌ Failed to parse Xcode version"
             exit 1
         }
